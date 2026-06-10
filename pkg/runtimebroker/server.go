@@ -32,9 +32,11 @@ import (
 	"time"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/agent"
+	"github.com/GoogleCloudPlatform/scion/pkg/api"
 	"github.com/GoogleCloudPlatform/scion/pkg/brokercredentials"
 	"github.com/GoogleCloudPlatform/scion/pkg/config"
 	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
+	"github.com/GoogleCloudPlatform/scion/pkg/projectcompat"
 	scionrt "github.com/GoogleCloudPlatform/scion/pkg/runtime"
 	"github.com/GoogleCloudPlatform/scion/pkg/storage"
 	"github.com/GoogleCloudPlatform/scion/pkg/templatecache"
@@ -1015,14 +1017,11 @@ func (s *Server) LookupContainerID(ctx context.Context, slug, projectID string) 
 	slug = strings.ToLower(slug)
 
 	filter := map[string]string{"scion.name": slug}
-	if projectID != "" {
-		filter["scion.grove_id"] = projectID
-	}
-
 	agents, err := s.manager.List(ctx, filter)
 	if err != nil {
 		return "", fmt.Errorf("failed to list agents: %w", err)
 	}
+	agents = agentsForProject(agents, projectID)
 
 	// Fall back to auxiliary runtimes (e.g. kubernetes when default is docker)
 	if len(agents) == 0 {
@@ -1035,6 +1034,9 @@ func (s *Server) LookupContainerID(ctx context.Context, slug, projectID string) 
 
 		for rtName, aux := range auxRuntimes {
 			auxAgents, auxErr := aux.Manager.List(ctx, filter)
+			if auxErr == nil {
+				auxAgents = agentsForProject(auxAgents, projectID)
+			}
 			if auxErr == nil && len(auxAgents) > 0 {
 				agents = auxAgents
 				slog.Debug("Agent found via auxiliary runtime", "slug", slug, "runtime", rtName)
@@ -1104,15 +1106,13 @@ func (s *Server) LookupAgent(ctx context.Context, slug, projectID string) (*Agen
 
 	slug = strings.ToLower(slug)
 	filter := map[string]string{"scion.name": slug}
-	if projectID != "" {
-		filter["scion.grove_id"] = projectID
-	}
 
 	// Try default manager first
 	agents, err := s.manager.List(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)
 	}
+	agents = agentsForProject(agents, projectID)
 
 	runtimeName := s.runtime.Name()
 	var matchedRuntime scionrt.Runtime
@@ -1128,6 +1128,9 @@ func (s *Server) LookupAgent(ctx context.Context, slug, projectID string) (*Agen
 
 		for rtName, aux := range auxRuntimes {
 			auxAgents, auxErr := aux.Manager.List(ctx, filter)
+			if auxErr == nil {
+				auxAgents = agentsForProject(auxAgents, projectID)
+			}
 			if auxErr == nil && len(auxAgents) > 0 {
 				agents = auxAgents
 				runtimeName = rtName
@@ -1216,6 +1219,19 @@ func (s *Server) LookupAgent(ctx context.Context, slug, projectID string) (*Agen
 	}
 
 	return result, nil
+}
+
+func agentsForProject(agents []api.AgentInfo, projectID string) []api.AgentInfo {
+	if projectID == "" {
+		return agents
+	}
+	filtered := make([]api.AgentInfo, 0, len(agents))
+	for _, agent := range agents {
+		if projectcompat.ProjectIDFromLabels(agent.Labels) == projectID {
+			filtered = append(filtered, agent)
+		}
+	}
+	return filtered
 }
 
 // RuntimeCommand implements AgentLookup interface.

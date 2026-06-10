@@ -31,6 +31,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/scion/pkg/agent/state"
 	"github.com/GoogleCloudPlatform/scion/pkg/api"
+	"github.com/GoogleCloudPlatform/scion/pkg/projectcompat"
 	"github.com/GoogleCloudPlatform/scion/pkg/util"
 )
 
@@ -417,8 +418,8 @@ func buildCommonRunArgs(config RunConfig) ([]string, error) {
 		addArg("--label", fmt.Sprintf("scion.grove=%s", config.Project))
 	}
 	if config.ProjectID != "" {
-		addArg("--label", fmt.Sprintf("scion.project_id=%s", config.ProjectID))
-		addArg("--label", fmt.Sprintf("scion.grove_id=%s", config.ProjectID))
+		addArg("--label", fmt.Sprintf("%s=%s", projectcompat.LabelProjectID, config.ProjectID))
+		addArg("--label", fmt.Sprintf("%s=%s", projectcompat.LabelGroveID, config.ProjectID))
 	}
 
 	if config.Template != "" {
