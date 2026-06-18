@@ -54,6 +54,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/store/entadapter"
 	"github.com/GoogleCloudPlatform/scion/pkg/util"
 	"github.com/GoogleCloudPlatform/scion/pkg/util/logging"
+	"github.com/GoogleCloudPlatform/scion/web"
 	"github.com/spf13/cobra"
 )
 
@@ -328,6 +329,9 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 			hubSrv.StartBackgroundServices(ctx)
 		}
 
+		if !web.AssetsEmbedded && webAssetsDir == "" {
+			slog.Warn("This binary was built without web assets. The web UI will not be available. Run 'make web' and rebuild to include the web frontend, or use --web-assets-dir.")
+		}
 		log.Printf("Starting Web Frontend on %s:%d", cfg.Hub.Host, webPort)
 		wg.Add(1)
 		go func() {
