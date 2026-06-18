@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/api"
+	"github.com/GoogleCloudPlatform/scion/pkg/config"
 	"github.com/GoogleCloudPlatform/scion/pkg/storage"
 	"github.com/GoogleCloudPlatform/scion/pkg/store"
 )
@@ -238,6 +239,8 @@ func (s *Server) handleHarnessConfigByID(w http.ResponseWriter, r *http.Request)
 		s.handleHarnessConfigDownload(w, r, hcID)
 	case "clone":
 		s.handleHarnessConfigClone(w, r, hcID)
+	case "reimport":
+		s.handleHarnessConfigReimport(w, r, hcID)
 	case "files":
 		s.handleHarnessConfigFiles(w, r, hcID, "")
 	default:
@@ -694,4 +697,107 @@ func (s *Server) handleHarnessConfigClone(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusCreated, clone)
+}
+
+// ReimportHarnessConfigRequest is the optional request body for the reimport endpoint.
+type ReimportHarnessConfigRequest struct {
+	SourceURL string `json:"sourceUrl,omitempty"`
+}
+
+// handleHarnessConfigReimport re-imports a harness-config from its stored
+// source_url (or an override URL). POST /api/v1/harness-configs/{id}/reimport
+func (s *Server) handleHarnessConfigReimport(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		MethodNotAllowed(w)
+		return
+	}
+
+	ctx := r.Context()
+
+	hc, err := s.store.GetHarnessConfig(ctx, id)
+	if err != nil {
+		writeErrorFromErr(w, err, "")
+		return
+	}
+	if hc == nil {
+		NotFound(w, "HarnessConfig")
+		return
+	}
+
+	var req ReimportHarnessConfigRequest
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := readJSON(r, &req); err != nil {
+			BadRequest(w, "Invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	sourceURL := req.SourceURL
+	if sourceURL == "" {
+		sourceURL = hc.SourceURL
+	}
+	if sourceURL == "" {
+		writeError(w, http.StatusBadRequest, "no_source_url",
+			"No source URL stored and none provided. Use the sourceUrl field to specify one.", nil)
+		return
+	}
+
+	sourceURL = config.NormalizeTemplateSourceURL(sourceURL)
+
+	// Authorize: same as import — harness_config:create on the owning scope.
+	if hc.Scope == store.HarnessConfigScopeGlobal {
+		userIdent := GetUserIdentityFromContext(ctx)
+		if userIdent == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required", nil)
+			return
+		}
+		decision := s.authzService.CheckAccess(ctx, userIdent, Resource{Type: "harness_config"}, ActionCreate)
+		if !decision.Allowed {
+			writeError(w, http.StatusForbidden, ErrCodeForbidden, "You do not have permission to reimport global resources", nil)
+			return
+		}
+	} else if hc.Scope == store.HarnessConfigScopeProject {
+		if !s.authorizeProjectImport(ctx, w, hc.ScopeID, "harness-configs") {
+			return
+		}
+	} else if hc.Scope == store.HarnessConfigScopeUser {
+		userIdent := GetUserIdentityFromContext(ctx)
+		if userIdent == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required", nil)
+			return
+		}
+		if hc.OwnerID != userIdent.ID() {
+			writeError(w, http.StatusForbidden, ErrCodeForbidden, "You do not have permission to reimport another user's harness config", nil)
+			return
+		}
+	} else {
+		writeError(w, http.StatusForbidden, ErrCodeForbidden, "Reimport is not supported for this resource scope", nil)
+		return
+	}
+
+	if s.GetStorage() == nil {
+		writeError(w, http.StatusServiceUnavailable, "storage_unavailable", "Storage is not configured", nil)
+		return
+	}
+
+	kind := s.harnessConfigImportKind()
+	run := func(progress importProgressFunc) ([]string, error) {
+		return s.importFromRemote(ctx, hc.ScopeID, sourceURL, hc.Scope, kind, progress, nil)
+	}
+
+	if importAcceptsNDJSON(r) {
+		s.streamImport(w, run)
+		return
+	}
+
+	imported, err := run(nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "reimport_failed", err.Error(), nil)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ImportHarnessConfigsResponse{
+		HarnessConfigs: imported,
+		Count:          len(imported),
+	})
 }
